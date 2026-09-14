@@ -1,0 +1,8 @@
+data/*.csv
+data/*.joblib
+data/*.zip
+data/*.z01
+data/*.z02
+__pycache__/
+*.pyc
+.DS_Store

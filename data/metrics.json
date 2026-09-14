@@ -1,0 +1,31 @@
+{
+  "n_customers": 42372,
+  "n_theft": 3615,
+  "theft_rate": 0.08531577456811101,
+  "test_size": 10593,
+  "random_forest": {
+    "roc_auc": 0.7799448352615913,
+    "pr_auc": 0.29998836020670905,
+    "best_threshold": 0.5463461500883098,
+    "precision_theft": 0.31255411255411253,
+    "recall_theft": 0.3993362831858407,
+    "f1_theft": 0.3506556580864497
+  },
+  "isolation_forest": {
+    "roc_auc": 0.5812441145281986,
+    "pr_auc": 0.1090538086616765
+  },
+  "feature_importance": {
+    "std_kwh": 0.15014144712004188,
+    "trend_slope": 0.14569123143827548,
+    "missing_rate": 0.1158528196006413,
+    "max_single_day_drop": 0.10836740026060354,
+    "recency_ratio": 0.10406982723438434,
+    "mean_kwh": 0.08556643361520191,
+    "coeff_variation": 0.0834226863377849,
+    "weekend_weekday_ratio": 0.0609868416741286,
+    "pct_large_drop_days": 0.05811169532840215,
+    "zero_rate": 0.04678697601081552,
+    "longest_zero_run": 0.04100264137972043
+  }
+}
