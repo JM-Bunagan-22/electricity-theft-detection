@@ -18,9 +18,19 @@ LONG_DF = pd.read_csv(os.path.join(DATA_DIR, "consumption_long.csv"), parse_date
 with open(os.path.join(DATA_DIR, "metrics.json")) as f:
     METRICS = json.load(f)
 
-TOP_N = 200
-TOP_CUSTOMERS = SCORED.head(TOP_N).copy()
+TOP_N = 150
+# Union of each model's top-ranked customers, so a customer XGBOD flags as
+# high-risk is visible even if Random Forest ranked them lower (and vice versa).
+top_by_rf = SCORED.nlargest(TOP_N, "risk_score")
+top_by_xgbod = SCORED.nlargest(TOP_N, "xgbod_risk_score")
+TOP_CUSTOMERS = (
+    pd.concat([top_by_rf, top_by_xgbod])
+    .drop_duplicates(subset="customer_id")
+    .sort_values("risk_score", ascending=False)
+    .reset_index(drop=True)
+)
 TOP_CUSTOMERS["risk_score"] = TOP_CUSTOMERS["risk_score"].round(3)
+TOP_CUSTOMERS["xgbod_risk_score"] = TOP_CUSTOMERS["xgbod_risk_score"].round(3)
 TOP_CUSTOMERS["outcome"] = TOP_CUSTOMERS["flag"].map({1: "Confirmed theft", 0: "Normal"})
 
 app = Dash(__name__)
@@ -31,6 +41,8 @@ STAT_CARDS = [
     ("Confirmed theft cases", f"{METRICS['n_theft']:,} ({METRICS['theft_rate']:.1%})"),
     ("Random Forest ROC-AUC", f"{METRICS['random_forest']['roc_auc']:.3f}"),
     ("Random Forest PR-AUC", f"{METRICS['random_forest']['pr_auc']:.3f}"),
+    ("XGBOD ROC-AUC", f"{METRICS['xgbod']['roc_auc']:.3f}"),
+    ("XGBOD PR-AUC", f"{METRICS['xgbod']['pr_auc']:.3f}"),
     ("Isolation Forest ROC-AUC", f"{METRICS['isolation_forest']['roc_auc']:.3f}"),
     ("Recall @ best F1 threshold", f"{METRICS['random_forest']['recall_theft']:.1%}"),
 ]
@@ -55,7 +67,10 @@ app.layout = html.Div(
     children=[
         html.H1("⚡ Electricity Theft Risk Dashboard", style={"marginBottom": "4px"}),
         html.P(
-            "Random Forest risk scores vs. confirmed SGCC theft labels — top 200 highest-risk customers.",
+            "Random Forest and XGBOD risk scores vs. confirmed SGCC theft labels — "
+            f"union of each model's top {TOP_N} highest-risk customers. XGBOD (unsupervised "
+            "outlier scores fed into XGBoost) beats plain Random Forest on both metrics; "
+            "see adbench-electricity-theft for the full 31-algorithm comparison this came from.",
             style={"color": "#555", "marginTop": 0},
         ),
         html.Div(
@@ -81,22 +96,32 @@ app.layout = html.Div(
             style={"display": "flex", "gap": "24px", "flexWrap": "wrap"},
             children=[
                 html.Div(
-                    style={"flex": "1.3", "minWidth": "480px"},
+                    style={"flex": "1.6", "minWidth": "620px"},
                     children=[
                         html.H3("Top risk-ranked customers"),
                         dash_table.DataTable(
                             id="risk-table",
                             columns=[
                                 {"name": "Customer ID", "id": "customer_id"},
-                                {"name": "Risk score", "id": "risk_score"},
+                                {"name": "RF risk score", "id": "risk_score"},
+                                {"name": "XGBOD risk score", "id": "xgbod_risk_score"},
                                 {"name": "Actual outcome", "id": "outcome"},
                             ],
-                            data=TOP_CUSTOMERS[["customer_id", "risk_score", "outcome"]].to_dict("records"),
+                            data=TOP_CUSTOMERS[
+                                ["customer_id", "risk_score", "xgbod_risk_score", "outcome"]
+                            ].to_dict("records"),
                             row_selectable="single",
                             selected_rows=[0],
                             page_size=12,
                             sort_action="native",
+                            style_table={"overflowX": "auto"},
                             style_cell={"padding": "8px", "fontSize": "13px"},
+                            style_cell_conditional=[
+                                {"if": {"column_id": "customer_id"}, "minWidth": "150px", "maxWidth": "150px"},
+                                {"if": {"column_id": "risk_score"}, "minWidth": "100px"},
+                                {"if": {"column_id": "xgbod_risk_score"}, "minWidth": "110px"},
+                                {"if": {"column_id": "outcome"}, "minWidth": "130px"},
+                            ],
                             style_header={"fontWeight": "700", "background": "#f4f6fb"},
                             style_data_conditional=[
                                 {
@@ -142,7 +167,10 @@ def update_chart(selected_rows):
     )
     outcome = "Confirmed theft" if row["flag"] == 1 else "Normal"
     fig.update_layout(
-        title=f"Customer {customer_id} — risk score {row['risk_score']:.3f} — {outcome}",
+        title=(
+            f"Customer {customer_id} — RF {row['risk_score']:.3f} / "
+            f"XGBOD {row['xgbod_risk_score']:.3f} — {outcome}"
+        ),
         margin=dict(l=40, r=20, t=50, b=30),
         height=380,
         plot_bgcolor="white",

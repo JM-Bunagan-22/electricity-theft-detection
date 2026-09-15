@@ -1,6 +1,7 @@
 pandas
 numpy
 scikit-learn
+xgboost
 dash
 plotly
 requests

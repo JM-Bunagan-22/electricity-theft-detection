@@ -18,6 +18,24 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import LocalOutlierFactor
+from xgboost import XGBClassifier
+
+def _unsupervised_score_features(X_train: pd.DataFrame, X_all: pd.DataFrame, contamination: float) -> pd.DataFrame:
+    """Fit unsupervised outlier detectors on the training rows only, then score every
+    customer with each. These scores become extra input features for XGBOD below --
+    the ADBench benchmark run (see adbench-electricity-theft) found this combination
+    of unsupervised outlier scores + gradient boosting beats a plain supervised model."""
+    iso = IsolationForest(n_estimators=300, contamination=contamination, random_state=42, n_jobs=-1)
+    iso.fit(X_train)
+    iso_scores = -iso.score_samples(X_all)
+
+    lof = LocalOutlierFactor(n_neighbors=20, novelty=True, contamination=contamination, n_jobs=-1)
+    lof.fit(X_train)
+    lof_scores = -lof.score_samples(X_all)
+
+    return pd.DataFrame({"iso_outlier_score": iso_scores, "lof_outlier_score": lof_scores}, index=X_all.index)
+
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 FEATURES_IN = os.path.join(DATA_DIR, "customer_features.csv")
@@ -80,6 +98,29 @@ def run():
     iso_roc_auc = roc_auc_score(y_test, iso_scores_test)
     iso_pr_auc = average_precision_score(y_test, iso_scores_test)
 
+    # --- XGBOD-style: unsupervised outlier scores as extra features for XGBoost ---
+    # (Zhao & Hryniewicki 2018; the winning approach in the ADBench benchmark run
+    # against this same dataset -- see adbench-electricity-theft.)
+    unsup_scores_all = _unsupervised_score_features(X_train, X, contamination)
+    X_train_aug = pd.concat([X_train, unsup_scores_all.loc[X_train.index]], axis=1)
+    X_test_aug = pd.concat([X_test, unsup_scores_all.loc[X_test.index]], axis=1)
+    X_all_aug = pd.concat([X, unsup_scores_all], axis=1)
+
+    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    xgbod = XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.1,
+        scale_pos_weight=scale_pos_weight,
+        eval_metric="logloss",
+        random_state=42,
+        n_jobs=-1,
+    )
+    xgbod.fit(X_train_aug, y_train)
+    xgbod_scores_test = xgbod.predict_proba(X_test_aug)[:, 1]
+    xgbod_roc_auc = roc_auc_score(y_test, xgbod_scores_test)
+    xgbod_pr_auc = average_precision_score(y_test, xgbod_scores_test)
+
     metrics = {
         "n_customers": int(len(df)),
         "n_theft": int(y.sum()),
@@ -97,6 +138,10 @@ def run():
             "roc_auc": float(iso_roc_auc),
             "pr_auc": float(iso_pr_auc),
         },
+        "xgbod": {
+            "roc_auc": float(xgbod_roc_auc),
+            "pr_auc": float(xgbod_pr_auc),
+        },
         "feature_importance": dict(
             sorted(
                 zip(FEATURE_COLS, clf.feature_importances_.tolist()),
@@ -110,16 +155,19 @@ def run():
         json.dump(metrics, f, indent=2)
     print(json.dumps(metrics, indent=2))
 
-    # Score every customer with the trained RF for the dashboard, keeping
-    # track of which rows were held out of training (test set).
+    # Score every customer with both models for the dashboard, keeping track
+    # of which rows were held out of training (test set).
     all_scores = clf.predict_proba(X)[:, 1]
+    xgbod_all_scores = xgbod.predict_proba(X_all_aug)[:, 1]
     scored = df[["customer_id", "flag"] + FEATURE_COLS].copy()
     scored["risk_score"] = all_scores
+    scored["xgbod_risk_score"] = xgbod_all_scores
     scored["in_test_set"] = df.index.isin(idx_test)
     scored = scored.sort_values("risk_score", ascending=False).reset_index(drop=True)
     scored.to_csv(RESULTS_OUT, index=False)
 
     joblib.dump(clf, MODEL_OUT)
+    joblib.dump(xgbod, os.path.join(DATA_DIR, "xgbod_model.joblib"))
     print(f"\nSaved scored customers to {RESULTS_OUT}")
     print(f"Saved metrics to {METRICS_OUT}")
     return metrics

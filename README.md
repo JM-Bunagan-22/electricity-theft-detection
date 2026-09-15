@@ -9,24 +9,28 @@ Detecting electricity theft using the SGCC labeled smart-meter dataset — a dir
 1. **Data**: [SGCC Electricity Theft Detection dataset](https://github.com/henryRDlab/ElectricityTheftDetection) (State Grid Corporation of China) — daily consumption for 42,372 customers from 2014-01-01 to 2016-10-31, each labeled `0` (normal) or `1` (confirmed theft). ~8.5% of customers are labeled theft.
 2. **Feature engineering**: per-customer features built from each ~1,035-day consumption history — mean/std/coefficient of variation, missing-data rate, zero-reading rate and longest zero streak, largest single-day drop, % of days with a large drop, weekend/weekday ratio, consumption trend slope, and a first-half-vs-second-half recency ratio.
 3. **Detection**: train a **Random Forest classifier** on the labels (supervised) and an **Isolation Forest** (unsupervised, never sees the labels) on the same features, then score both against the held-out ground truth.
-4. **Visualization**: a Dash dashboard ranking customers by theft risk score, with a consumption chart per customer so a reviewer can see the pattern behind the score (e.g. a meter that goes flat or erratic mid-history).
+4. **XGBOD**: fit unsupervised Isolation Forest and Local Outlier Factor scores as extra features, then train an **XGBoost classifier** on the original features plus those outlier scores — the same approach that topped the 31-algorithm comparison in [adbench-electricity-theft](https://github.com/JM-Bunagan-22/adbench-electricity-theft).
+5. **Visualization**: a Dash dashboard ranking customers by theft risk score, with a consumption chart per customer so a reviewer can see the pattern behind the score (e.g. a meter that goes flat or erratic mid-history). Shows both the Random Forest and XGBOD risk scores side by side.
 
 ## Result
 On a held-out 25% test set (10,593 customers, 8.5% theft rate):
 
 | Model | ROC-AUC | PR-AUC | Precision (theft) | Recall (theft) | F1 (theft) |
 |---|---|---|---|---|---|
-| Random Forest (supervised) | **0.780** | **0.300** | 0.313 | 0.399 | 0.351 |
+| **XGBOD** (outlier scores + XGBoost) | **0.787** | **0.326** | — | — | — |
+| Random Forest (supervised) | 0.780 | 0.300 | 0.313 | 0.399 | 0.351 |
 | Isolation Forest (unsupervised) | 0.581 | 0.109 | — | — | — |
 
 The supervised model clearly outperforms the unsupervised baseline (ROC-AUC 0.78 vs. 0.58, PR-AUC nearly 3x higher) — confirming the tradeoff the first project could only speculate about: unsupervised anomaly scores are a reasonable first pass when no labels exist, but once any confirmed fraud cases are available, even a modest supervised model captures far more signal. The most predictive features were `std_kwh`, `trend_slope`, and `missing_rate` — theft cases tend to show unstable consumption, a declining trend (tampering that under-reports over time), and gaps in the meter's readings, more than they show outright zeros.
 
 At the best F1 threshold, the Random Forest catches **40% of confirmed theft cases** while keeping **31% precision** — meaning roughly 1 in 3 flagged accounts is a real theft case, a workable hit rate for a human-reviewed shortlist out of 42k customers.
 
+**XGBOD update**: [adbench-electricity-theft](https://github.com/JM-Bunagan-22/adbench-electricity-theft) benchmarked 31 anomaly detection algorithms against this same dataset and found XGBOD (feeding unsupervised Isolation Forest / Local Outlier Factor scores into an XGBoost classifier) came out on top — but that comparison ran on ADBench's forced 10,000-row subsample. Re-running the same idea here on the full 42,372 customers pushes it slightly ahead of the plain Random Forest on both metrics (0.787 ROC-AUC / 0.326 PR-AUC vs. 0.780 / 0.300), confirming the result wasn't an artifact of the smaller sample. Both scores are now shown side by side in the dashboard.
+
 ![Dashboard screenshot](assets/dashboard.png)
 
 ## Stack
-Python · pandas · scikit-learn · Dash · Plotly
+Python · pandas · scikit-learn · XGBoost · Dash · Plotly
 
 ## Project Structure
 ```
@@ -35,7 +39,7 @@ electricity-theft-detection/
 ├── src/
 │   ├── data_loader.py       # download & join the multi-part SGCC archive
 │   ├── features.py          # per-customer feature engineering
-│   ├── theft_detection.py   # Random Forest vs. Isolation Forest, metrics
+│   ├── theft_detection.py   # Random Forest vs. Isolation Forest vs. XGBOD, metrics
 │   └── dashboard.py         # Dash app
 ├── notebooks/                # exploratory analysis
 ├── assets/                   # dashboard screenshot for README
@@ -58,7 +62,7 @@ python src/dashboard.py         # launches Dash app at localhost:8050
 ```
 
 ## Next Steps
-- [ ] Try gradient-boosted trees (XGBoost/LightGBM) against the Random Forest baseline
 - [ ] Add SHAP explanations per flagged customer for the dashboard, not just global feature importance
 - [ ] Engineer sequence-aware features (e.g. an LSTM/CNN over the raw daily series, as in the original SGCC paper) to see how much the hand-built features are leaving on the table
 - [ ] Calibrate the risk threshold against a cost model (investigation cost vs. recovered revenue) instead of optimizing F1
+- [ ] Try LightGBM/CatBoost in place of XGBoost in the XGBOD feature-stacking approach, since both beat XGBoost in the adbench-electricity-theft benchmark
